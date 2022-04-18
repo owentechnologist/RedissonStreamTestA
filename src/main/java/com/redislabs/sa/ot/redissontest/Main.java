@@ -5,9 +5,12 @@ import org.redisson.Redisson;
 import org.redisson.api.*;
 import org.redisson.api.stream.*;
 import org.redisson.config.Config;
+import redis.clients.jedis.Jedis;
 
 import java.io.Serializable;
 import java.time.Duration;
+import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.Map;
 
 
@@ -24,13 +27,14 @@ import java.util.Map;
  */
 public class Main {
 
+    public static final String NON_DEFAULT_GROUP_SIZE = "CHANGEGROUPSIZE";
     public static final String redissonSetName = "Z:dataUpdates";
     public static final String redissonStreamName = "X:dataUpdates";
     public static int playValue = 80;
     public static String providedConnectionString = "redis://127.0.0.1:6379";
     public static String userName = "default";
     public static String passKey = "";
-    public static long testSize = 3;
+    public static long testSize = 48;
     public static int howManyGroups = 2;
 
     /**
@@ -42,34 +46,59 @@ public class Main {
      * @throws Throwable
      */
     public static void main(String[] args) throws Throwable{
-        Config config = new Config();
-        if(args.length>0){
+        ArrayList<String> tempArgs = new ArrayList<String>();
+        if(Arrays.asList(args).contains(NON_DEFAULT_GROUP_SIZE)){
+            boolean captureNextArg = false;
+            for(String e:args) {
+                if(captureNextArg){
+                    howManyGroups=Integer.parseInt(e);
+                    captureNextArg=false;
+                }
+                if(e.equalsIgnoreCase(NON_DEFAULT_GROUP_SIZE)){
+                    // Expect the next argument to be the value for the size of the groups desired
+                    captureNextArg=true;
+                }else {
+                    tempArgs.add(e);
+                }
+            }
+            // Creating clean version of args with remaining possible arguments
+            args = (String[]) tempArgs.toArray(new String[0]);
+            System.out.println(args.length);
+        }
+        System.out.println("$$$ ------ Connecting to "+providedConnectionString);
+        testRedisson(initializeConfiguration(args));
+        Thread.sleep(3000);
+        testRedisson(initializeConfiguration(args));
+        writeManyObjectsAsEvents(testSize,initializeConfiguration(args));
+        startConsumerGroups(howManyGroups,initializeConfiguration(args));
+        writeManyObjectsAsEvents(testSize,initializeConfiguration(args));
+    }
+
+    /*
+    Redisson delivers more consistent results when multiple config objects are created
+    By creating these on demand for each task group, timeouts are avoided.
+     */
+    static Config initializeConfiguration(String[] args){
+        Config config = new Config().setNettyThreads(48);
+        if(args.length>1){
             providedConnectionString = args[0];
             userName=args[1];
             passKey=args[2];
             config.useSingleServer().setAddress(providedConnectionString).setClientName(userName).setPassword(passKey);
             //TODO: implement parsing user and password args
+        }else if(args.length>0){
+            providedConnectionString = args[0];
+            config.useSingleServer().setAddress(providedConnectionString);
         }else{
             config.useSingleServer().setAddress(providedConnectionString);
         }
-        //Caution!!!  This could clean up all keys before we test:
-        //comment out the following line if you want to wipe out all your data!
-        //new Jedis().flushAll();
-        //System.out.println("all keys have been flushed... DB is empty");
-        System.out.println("$$$ ------ Connecting to "+providedConnectionString);
-        testRedisson(config);
-        Thread.sleep(3000);
-        testRedisson(config);
-        writeManyObjectsAsEvents(testSize,config);
-        startConsumerGroups(howManyGroups,config);
-        writeManyObjectsAsEvents(testSize,config);
+        return config;
     }
 
     static void startConsumerGroups(int howManyGroups,Config config){
         //Create connection to Redis Server:
-        System.out.println("Connecting to "+providedConnectionString);
         for(int x = 0;x<howManyGroups;x++){
-            RedissonConsumerGroup redissonConsumerGroup = new RedissonConsumerGroup(config,x,testSize*30);
+            RedissonConsumerGroup redissonConsumerGroup = new RedissonConsumerGroup(config,x,10000);
             Thread t = new Thread(redissonConsumerGroup);
             t.start();
         }
@@ -77,7 +106,6 @@ public class Main {
 
     static void testRedisson(Config config){
         //Create connection to Redis Server:
-        System.out.println("Connecting to "+providedConnectionString);
         RedissonClient redisson = Redisson.create(config);
 
         //publish simple event with just: speed=1997 as the Entry:
@@ -161,7 +189,7 @@ public class Main {
 class SomeClazz implements Serializable{
     private static final long serialVersionUID=1L;
     private int someValue = (int) (System.currentTimeMillis()%500);
-    private String stringValue = ""+ (System.currentTimeMillis()%500);
+    private String stringValue = ((System.currentTimeMillis()%2)==0) ? "Happy Days Are Here Again" : "Cloudy & Rainy Sadness Pervades The Globe";
 
     public void setSomeValue(int sv){
         this.someValue = sv;
@@ -184,7 +212,7 @@ class SomeClazz implements Serializable{
 class RedissonConsumerGroup implements Runnable{
     long instanceStartTime = System.currentTimeMillis();
     RedissonClient redisson = null;
-    String lastUsedEventidKeyName = null;
+    //String lastUsedEventidKeyName = null;
     RStream<String, byte[]> stream = null;
     String groupName = "";
     String groupMemberId = "only1"; // TODO: add more than one member of each group if necessary
@@ -196,20 +224,27 @@ class RedissonConsumerGroup implements Runnable{
         this.maxNumberOfMessagesBeforeExiting = maxNumberOfMessagesBeforeExit;
         this.stream = redisson.getStream(Main.redissonStreamName);
         this.groupName = "group_"+groupId;
-        lastUsedEventidKeyName="H:"+this.groupName+":"+Main.redissonStreamName+":lastUsedId";
-
-        System.out.println("creating group... using lastUsedId == "+this.lastUsedId);
+        //  As mentioned elsewhere, no apparent need to track and update the lastUsedId on the consumer-side
+        //  lastUsedEventidKeyName=this.groupName+":"+Main.redissonStreamName+":lastUsedId";
         try {
-            try{
+          /*
+          * The following commented code was for debugging purposes and appears unnecessary
+          * as the Redis Server is tracking delivered messages for the groups:
+          try{
                 RBucket<String> val = redisson.getBucket(lastUsedEventidKeyName);
                 String usedStreamId = val.get();
                 this.lastUsedId = new StreamMessageId(Long.parseLong(usedStreamId.split("-")[0]),Long.parseLong(usedStreamId.split("-")[1]));
-            }catch (NullPointerException npe){} //we just go back to our default 0-0 lastUsedId
+            }catch (NullPointerException npe){
+                // if no record exists in redis... we just go back to our default 0-0 lastUsedId
+            }*/
             this.stream.createGroup(groupName, this.lastUsedId);
+            System.out.println("Created group... using lastUsedId == "+this.lastUsedId);
         }catch(org.redisson.client.RedisBusyException exception){
             System.out.println(exception.getLocalizedMessage());
-            //We could call this.stream.removeGroup(groupName)
+            //We could call
+            // this.stream.removeGroup(groupName);
             // and recreate it to reset the whole group to a new starting id
+            //This appears to be completely unnecessary as the Redis Server is tracking delivered messages for the groups.
         }
         System.out.println("creating group...done");
     }
@@ -249,10 +284,13 @@ class RedissonConsumerGroup implements Runnable{
         System.out.println("Worker -- "+this.groupName+"_"+this.groupMemberId+" -- >> processing event "+map.keySet());
         if(map.keySet().size()>0) {
             StreamMessageId nestedEventKey = (StreamMessageId) map.keySet().toArray()[0];
-            this.lastUsedId = nestedEventKey; // in case we want to keep track and create a new group from here
+            /*
+            * updating the lastUsedId is unnecessary as the redis server is keeping track for us...
+            *
+            this.lastUsedId = nestedEventKey;
             RBucket<String> val = redisson.getBucket(lastUsedEventidKeyName);
             val.set(this.lastUsedId.toString());
-
+            */
             Object omap = map.get(nestedEventKey);
             Map<String, byte[]> innerMap = map.get(nestedEventKey);
             if(innerMap.containsKey("someClazz")) {
@@ -266,6 +304,5 @@ class RedissonConsumerGroup implements Runnable{
         }
         return wasGood;
     }
-
 
 }
