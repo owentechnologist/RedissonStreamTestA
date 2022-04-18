@@ -34,7 +34,7 @@ public class Main {
     public static String providedConnectionString = "redis://127.0.0.1:6379";
     public static String userName = "default";
     public static String passKey = "";
-    public static long testSize = 48;
+    public static long testSize = 3;// 3 could be 48
     public static int howManyGroups = 2;
 
     /**
@@ -183,7 +183,6 @@ public class Main {
         System.out.println("$$$ ------ Completed task of writing "+howManyObjectsTotal+" objects to stream "+redissonStreamName);
         redisson.shutdown();
     }
-
 }
 
 class SomeClazz implements Serializable{
@@ -258,11 +257,11 @@ class RedissonConsumerGroup implements Runnable{
         try {
 
             System.out.println("Worker -- " + this.groupName + "_" + this.groupMemberId + " --  Executing first read from group...");
-            Map<StreamMessageId, Map<String, byte[]>> map = this.stream.readGroup(groupName, groupMemberId,StreamReadGroupArgs.neverDelivered().count(1).timeout(Duration.ofSeconds(3)));
+            Map<StreamMessageId, Map<String, byte[]>> map = this.stream.readGroup(groupName, groupMemberId,StreamReadGroupArgs.neverDelivered().count(1).timeout(Duration.ofSeconds(15)));
             System.out.println("Worker -- " + this.groupName + "_" + this.groupMemberId + " -- Executing first read from group... done.");
             processEvent(map);
-            while (System.currentTimeMillis() < (this.instanceStartTime+15000) && counter < limit) {
-                map = stream.readGroup(groupName, groupMemberId, StreamReadGroupArgs.neverDelivered().count(1).timeout(Duration.ofSeconds(3)));
+            while (System.currentTimeMillis() < (this.instanceStartTime+60000) && counter < limit) {
+                map = stream.readGroup(groupName, groupMemberId, StreamReadGroupArgs.neverDelivered().count(1).timeout(Duration.ofSeconds(15)));
                 if(processEvent(map)) {
                     counter++;
                 }
