@@ -295,10 +295,14 @@ class RedissonConsumerGroup implements Runnable{
             Map<String, byte[]> innerMap = map.get(nestedEventKey);
             if(innerMap.containsKey("someClazz")) {
                 SomeClazz clone = SerializationUtils.deserialize(innerMap.get("someClazz"));
-                System.out.println("\n\t^^^ SUCCESS! -- " + this.groupName + "_" + this.groupMemberId + " -- >> " + nestedEventKey + "\n" + clone);
+                if(Main.howManyGroups==2) {
+                    System.out.println("\n\t^^^ SUCCESS! -- " + this.groupName + "_" + this.groupMemberId + " -- >> " + nestedEventKey + "\n" + clone);
+                }
                 wasGood=true;
             }else{
-                System.out.println("\n~~~ SUCCESS! -- " + this.groupName + "_" + this.groupMemberId + " -- >> processing event success: " +omap);
+                if(Main.howManyGroups==2) {
+                    System.out.println("\n~~~ SUCCESS! -- " + this.groupName + "_" + this.groupMemberId + " -- >> processing event success: " + omap);
+                }
                 wasGood=true;
             }
         }
